@@ -414,8 +414,7 @@ Option<bool> toFilter(const std::string& expression,
                       const tsl::htrie_map<char, field>& search_schema,
                       const Store* store,
                       const std::string& doc_id_prefix,
-                      const bool& validate_field_names,
-                      const std::string& object_field_prefix) {
+                      const bool& validate_field_names) {
     // split into [field_name, value]
     size_t found_index = expression.find(':');
     if (found_index == std::string::npos) {
@@ -423,8 +422,6 @@ Option<bool> toFilter(const std::string& expression,
     }
     std::string&& field_name = expression.substr(0, found_index);
     StringUtils::trim(field_name);
-    field_name = object_field_prefix + field_name;
-
     if (field_name == "id") {
         std::string&& raw_value = expression.substr(found_index + 1, std::string::npos);
         StringUtils::trim(raw_value);
@@ -685,8 +682,7 @@ Option<bool> toParseTree(std::queue<std::string>& postfix, filter_node_t*& root,
                          const tsl::htrie_map<char, field>& search_schema,
                          const Store* store,
                          const std::string& doc_id_prefix,
-                         const bool& validate_field_names,
-                         const std::string& object_field_prefix) {
+                         const bool& validate_field_names) {
     std::stack<filter_node_t*> nodeStack;
     bool is_successful = true;
     std::string error_message;
@@ -723,11 +719,6 @@ Option<bool> toParseTree(std::queue<std::string>& postfix, filter_node_t*& root,
             // Expected value: $Collection(...) / !$Collection(...)
             const std::regex join_pattern(R"(^(\$|(\!\$)).+\(.+\)$)");
             bool is_referenced_filter = std::regex_match(expression, join_pattern);
-
-            // Expected value: object_name.{ <filter expression> }
-            const std::regex object_filter_pattern(R"(^.+\.\{.+\}$)");
-            bool is_object_filter = std::regex_match(expression, object_filter_pattern);
-
             if (is_referenced_filter) {
                 const bool is_negate_join = expression[0] == '!';
                 size_t parenthesis_index = expression.find('(');
@@ -745,38 +736,17 @@ Option<bool> toParseTree(std::queue<std::string>& postfix, filter_node_t*& root,
                 filter_exp = {expression.substr(parenthesis_index + 1, expression.size() - parenthesis_index - 2)};
                 filter_exp.referenced_collection_name = collection_name;
                 filter_exp.is_negate_join = is_negate_join;
-
-                filter_node = new filter_node_t(filter_exp);
-            } else if (is_object_filter) {
-                const auto curly_pos = expression.find('{');
-                const auto object_filter_query = expression.substr(curly_pos + 1,
-                                                                                    expression.size() - curly_pos - 2);
-                const auto object_prefix = expression.substr(0, curly_pos);
-
-                Option<bool> parse_filter_op = filter::parse_filter_query(object_filter_query, search_schema,
-                                                                          store, doc_id_prefix, filter_node,
-                                                                          validate_field_names,
-                                                                          object_prefix);
-                if (!parse_filter_op.ok()) {
-                    return parse_filter_op;
-                }
-
-                // Only root node of the object filter needs to be marked. Prevents redundant calls to
-                // `filter_result_iterator_t::validate_object_filter()` on every sub-node of the object filter tree.
-                filter_node->is_object_filter_root = true;
-                filter_node->object_field_name = object_prefix.substr(0, object_prefix.size() - 1);
             } else {
                 Option<bool> toFilter_op = toFilter(expression, filter_exp, search_schema, store, doc_id_prefix,
-                                                    validate_field_names, object_field_prefix);
+                                                    validate_field_names);
                 if (!toFilter_op.ok()) {
                     is_successful = false;
                     error_message = toFilter_op.error();
                     break;
                 }
-
-                filter_node = new filter_node_t(filter_exp);
             }
 
+            filter_node = new filter_node_t(filter_exp);
             filter_node->filter_query = expression;
         }
 
@@ -806,8 +776,7 @@ Option<bool> filter::parse_filter_query(const std::string& filter_query,
                                         const Store* store,
                                         const std::string& doc_id_prefix,
                                         filter_node_t*& root,
-                                        const bool& validate_field_names,
-                                        const std::string& object_field_prefix) {
+                                        const bool& validate_field_names) {
     auto _filter_query = filter_query;
     StringUtils::trim(_filter_query);
     if (_filter_query.empty()) {
@@ -815,7 +784,6 @@ Option<bool> filter::parse_filter_query(const std::string& filter_query,
     }
 
     std::queue<std::string> tokens;
-
     Option<bool> tokenize_op = StringUtils::tokenize_filter_query(filter_query, tokens);
     if (!tokenize_op.ok()) {
         return tokenize_op;
@@ -838,8 +806,7 @@ Option<bool> filter::parse_filter_query(const std::string& filter_query,
                                               search_schema,
                                               store,
                                               doc_id_prefix,
-                                              validate_field_names,
-                                              object_field_prefix);
+                                              validate_field_names);
     if (!toParseTree_op.ok()) {
         return toParseTree_op;
     }
